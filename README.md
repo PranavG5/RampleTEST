@@ -17,11 +17,11 @@ An internal site for the UI/UX team to test **every Pika and Higgsfield video mo
 
    | Variable | What it is |
    | --- | --- |
-   | `PIKA_API_KEY` | Pika Business API key (dev.pika.art) |
-   | `HIGGSFIELD_API_KEY_ID` | Higgsfield key ID (console.higgsfield.ai) |
-   | `HIGGSFIELD_API_KEY_SECRET` | Higgsfield key secret |
+   | `PIKA_API_KEY` | Pika API key (dev.pika.art) |
+   | `HIGGSFIELD_API_KEY` | Higgsfield credential written as `key-id:secret` (both parts from console.higgsfield.ai, joined by a colon) |
    | `ANTHROPIC_API_KEY` | Only needed for "Draft with Claude" |
-   | `AUTH_SECRET` | Any long random string, used to sign the login cookie. Generate one with `openssl rand -hex 32`. Required on Vercel. |
+
+   Optional: `AUTH_SECRET` (any long random string) signs the login cookie. If it's left out, the keys above are used to sign it instead. `HIGGSFIELD_API_KEY_ID` + `HIGGSFIELD_API_KEY_SECRET` also work in place of `HIGGSFIELD_API_KEY`.
 
 3. Deploy. API keys stay on the server and never reach the browser.
 

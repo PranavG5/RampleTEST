@@ -21,16 +21,26 @@ interface HfEntry {
 
 const entries = (catalogFile as { models: HfEntry[] }).models;
 
+// Higgsfield credentials are a key ID plus a secret. Accept them either as one
+// "key-id:secret" string (HIGGSFIELD_API_KEY, same format as Higgsfield's SDKs)
+// or as two separate variables.
 function authHeader(): string {
-  const id = process.env.HIGGSFIELD_API_KEY_ID;
-  const secret = process.env.HIGGSFIELD_API_KEY_SECRET;
-  if (!id || !secret) {
-    throw new ProviderError(
-      500,
-      "HIGGSFIELD_API_KEY_ID and HIGGSFIELD_API_KEY_SECRET are not set. Add them in the Vercel project settings.",
-    );
-  }
-  return `Key ${id}:${secret}`;
+  const single = process.env.HIGGSFIELD_API_KEY?.trim();
+  if (single) return `Key ${single}`;
+  const id = process.env.HIGGSFIELD_API_KEY_ID?.trim();
+  const secret = process.env.HIGGSFIELD_API_KEY_SECRET?.trim();
+  if (id && secret) return `Key ${id}:${secret}`;
+  throw new ProviderError(500, "HIGGSFIELD_API_KEY is not set. Add it in the Vercel project settings as key-id:secret.");
+}
+
+// A 401 usually means only half of the credential was pasted.
+function authHint(status: number, message: string): string {
+  if (status !== 401) return message;
+  const single = process.env.HIGGSFIELD_API_KEY?.trim();
+  const missingSecret = single && !single.includes(":");
+  return missingSecret
+    ? `${message}. HIGGSFIELD_API_KEY should be key-id:secret (both parts from console.higgsfield.ai, joined by a colon).`
+    : message;
 }
 
 export function classifyFunction(id: string, workflow: string): string {
@@ -87,7 +97,7 @@ export async function submitHiggsfield(id: string, input: Record<string, unknown
   });
   const body = (await readBody(res)) as { request_id?: string };
   if (!res.ok || !body?.request_id) {
-    throw new ProviderError(res.ok ? 502 : res.status, extractError(body, `Higgsfield rejected the request (${res.status})`));
+    throw new ProviderError(res.ok ? 502 : res.status, authHint(res.status, extractError(body, `Higgsfield rejected the request (${res.status})`)));
   }
   return body.request_id;
 }
@@ -117,7 +127,7 @@ export async function getHiggsfieldJob(requestId: string): Promise<JobState> {
     video?: { url?: string };
     videos?: { url?: string }[];
   };
-  if (!res.ok) throw new ProviderError(res.status, extractError(body, `Higgsfield status lookup failed (${res.status})`));
+  if (!res.ok) throw new ProviderError(res.status, authHint(res.status, extractError(body, `Higgsfield status lookup failed (${res.status})`)));
 
   switch (body.status) {
     case "completed": {
@@ -151,7 +161,7 @@ export async function higgsfieldUploadTarget(contentType: string) {
   });
   const body = (await readBody(res)) as { upload_url?: string; public_url?: string; upload_headers?: Record<string, string> };
   if (!res.ok || !body?.upload_url || !body.public_url) {
-    throw new ProviderError(res.status || 502, extractError(body, `Higgsfield upload setup failed (${res.status})`));
+    throw new ProviderError(res.status || 502, authHint(res.status, extractError(body, `Higgsfield upload setup failed (${res.status})`)));
   }
   return { uploadUrl: body.upload_url, headers: body.upload_headers ?? {}, publicUrl: body.public_url };
 }

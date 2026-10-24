@@ -65,7 +65,7 @@ export async function readBody(res: Response): Promise<unknown> {
 }
 
 export function requireEnv(name: string, hint: string): string {
-  const v = process.env[name];
+  const v = process.env[name]?.trim();
   if (!v) throw new ProviderError(500, `${name} is not set. ${hint}`);
   return v;
 }
