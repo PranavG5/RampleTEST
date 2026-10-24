@@ -21,6 +21,8 @@ An internal site for the UI/UX team to test **every Pika and Higgsfield video mo
    | `HIGGSFIELD_API_KEY` | Higgsfield credential written as `key-id:secret` (both parts from console.higgsfield.ai, joined by a colon) |
    | `ANTHROPIC_API_KEY` | Only needed for "Draft with Claude" |
 
+   Also connect a **Vercel Blob** store (Project → Storage → Create Database → Blob → connect to this project, then redeploy). Pika's storage only accepts browser uploads from Pika's own site, so Pika inputs are uploaded to Blob and Pika reads them from there. Without it, Pika uploads are limited to 4 MB. Higgsfield uploads don't need it.
+
    Optional: `AUTH_SECRET` (any long random string) signs the login cookie. If it's left out, the keys above are used to sign it instead. `HIGGSFIELD_API_KEY_ID` + `HIGGSFIELD_API_KEY_SECRET` also work in place of `HIGGSFIELD_API_KEY`.
 
 3. Deploy. API keys stay on the server and never reach the browser.
@@ -51,6 +53,7 @@ app/page.tsx              main screen: model picker, inputs, settings, results
 app/api/models            model lists + per-model input schema
 app/api/quote             Pika price quote (free)
 app/api/upload            presigned upload URL from the provider (browser uploads directly)
+app/api/upload/blob       Vercel Blob upload tokens (used for Pika inputs)
 app/api/upload/proxy      fallback upload through the server (4 MB max on Vercel)
 app/api/generate          submit a job to the chosen model
 app/api/jobs              poll job status
@@ -62,7 +65,7 @@ proxy.ts                  login gate for every page and API route
 scripts/sync-higgsfield.mjs  rebuilds the Higgsfield model list
 ```
 
-Uploads go straight from the browser to the provider's storage through a presigned URL, so large videos never pass through Vercel's 4.5 MB request limit. If a provider's storage blocks browser uploads (CORS), the app falls back to uploading through the server, and that fallback works only for files under 4 MB.
+Uploads go straight from the browser to storage, so large videos never pass through Vercel's 4.5 MB request limit. Higgsfield inputs go to Higgsfield's own storage through a presigned URL. Pika's storage blocks browser uploads from other sites (CORS), so Pika inputs go to the project's Vercel Blob store (`app/api/upload/blob`) and Pika reads the public Blob URL. If no Blob store is connected, the app uploads through the server instead, which works only for files under 4 MB.
 
 ## Known limits
 
