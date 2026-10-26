@@ -4,13 +4,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { runsToCsv } from "@/lib/history";
 import { PROVIDER_LABEL, type Run } from "@/lib/types";
 import { fnLabel } from "./ModelPicker";
+import RunVideo from "./RunVideo";
 
 interface Props {
   runs: Run[];
   onUpdate: (id: string, patch: Partial<Run>) => void;
   onDelete: (id: string) => void;
   onReuse: (run: Run) => void;
-  onClearAll: () => void;
+  onRetryArchive: (id: string) => void;
 }
 
 const ACTIVE = new Set(["uploading", "submitting", "queued", "running"]);
@@ -27,6 +28,31 @@ const STATUS_TEXT: Record<Run["status"], string> = {
 function elapsed(r: Run, now: number): string {
   const s = Math.max(0, Math.round(((r.finishedAt ?? now) - r.createdAt) / 1000));
   return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+const hasVideo = (r: Run) => r.status === "completed" && !!(r.providerVideoUrl || r.videoPath);
+
+// Where the finished video is kept: the team's Storage bucket, or still only at the provider.
+function ArchiveBadge({ r, onRetry }: { r: Run; onRetry: () => void }) {
+  if (!hasVideo(r)) return null;
+  switch (r.archiveStatus) {
+    case "stored":
+      return <span className="text-[11px] text-ok">Saved to team library</span>;
+    case "pending":
+    case "uploading":
+      return <span className="text-[11px] text-muted">Saving to team library…</span>;
+    case "failed":
+      return (
+        <span className="text-[11px] text-bad" title={r.archiveError}>
+          {r.archiveRetryAt ? "Save failed, retrying soon" : "Not saved to team library"}
+          {!r.archiveRetryAt && (
+            <button onClick={onRetry} className="ml-2 font-medium text-accent hover:underline">Retry save</button>
+          )}
+        </span>
+      );
+    default:
+      return null;
+  }
 }
 
 function money(r: Run): string | null {
@@ -55,10 +81,10 @@ function Stars({ value, onChange }: { value?: number; onChange: (v: number | und
 }
 
 function RunCard({
-  r, now, selected, onSelect, onUpdate, onDelete, onReuse,
+  r, now, selected, onSelect, onUpdate, onDelete, onReuse, onRetryArchive,
 }: {
   r: Run; now: number; selected: boolean; onSelect: () => void;
-  onUpdate: (p: Partial<Run>) => void; onDelete: () => void; onReuse: () => void;
+  onUpdate: (p: Partial<Run>) => void; onDelete: () => void; onReuse: () => void; onRetryArchive: () => void;
 }) {
   const [showPrompt, setShowPrompt] = useState(false);
   const [notes, setNotes] = useState(r.notes ?? "");
@@ -67,8 +93,8 @@ function RunCard({
   return (
     <article className={`flex flex-col overflow-hidden rounded-2xl border bg-panel ${selected ? "border-accent ring-1 ring-accent" : "border-line"}`}>
       <div className="relative aspect-video bg-black/90">
-        {r.status === "completed" && r.videoUrl ? (
-          <video src={r.videoUrl} controls playsInline className="h-full w-full object-contain" preload="metadata" />
+        {hasVideo(r) ? (
+          <RunVideo run={r} controls playsInline className="h-full w-full object-contain" preload="metadata" />
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-2 p-4 text-center text-sm text-white/80">
             {active && <div className="h-6 w-6 animate-spin rounded-full border-2 border-white/30 border-t-white" />}
@@ -94,6 +120,7 @@ function RunCard({
             {!active && <span>took {r.runtimeS ? `${Math.round(r.runtimeS)}s` : elapsed(r, now)}</span>}
             {money(r) && <span>{money(r)}</span>}
           </div>
+          <ArchiveBadge r={r} onRetry={onRetryArchive} />
         </div>
         {r.prompt && (
           <button onClick={() => setShowPrompt((s) => !s)} className={`text-left text-xs text-muted ${showPrompt ? "" : "line-clamp-2"}`}>
@@ -112,7 +139,11 @@ function RunCard({
         />
         <div className="mt-auto flex flex-wrap gap-3 pt-1 text-xs">
           <button onClick={onReuse} className="text-accent hover:underline">Reuse settings</button>
-          {r.videoUrl && <a href={r.videoUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">Open / download ↗</a>}
+          {r.videoPath && r.archiveStatus === "stored" ? (
+            <a href={`/api/runs/${r.id}/video?redirect=1&download=1`} className="text-accent hover:underline">Download ↓</a>
+          ) : (
+            r.providerVideoUrl && <a href={r.providerVideoUrl} target="_blank" rel="noreferrer" className="text-accent hover:underline">Open / download ↗</a>
+          )}
           <button onClick={onDelete} className="ml-auto text-muted hover:text-bad">Delete</button>
         </div>
       </div>
@@ -143,9 +174,9 @@ function CompareView({ runs, onClose }: { runs: Run[]; onClose: () => void }) {
       <div className={`grid min-h-0 flex-1 gap-3 overflow-auto ${runs.length > 2 ? "md:grid-cols-2" : runs.length === 2 ? "md:grid-cols-2" : ""}`}>
         {runs.map((r, i) => (
           <div key={r.id} className="flex min-h-0 flex-col rounded-xl border border-line bg-panel p-2">
-            <video
-              ref={(el) => { refs.current[i] = el; }}
-              src={r.videoUrl}
+            <RunVideo
+              run={r}
+              videoRef={(el) => { refs.current[i] = el; }}
               controls
               playsInline
               loop
@@ -167,7 +198,7 @@ function CompareView({ runs, onClose }: { runs: Run[]; onClose: () => void }) {
   );
 }
 
-export default function Results({ runs, onUpdate, onDelete, onReuse, onClearAll }: Props) {
+export default function Results({ runs, onUpdate, onDelete, onReuse, onRetryArchive }: Props) {
   const [now, setNow] = useState(() => Date.now());
   const [selected, setSelected] = useState<string[]>([]);
   const [comparing, setComparing] = useState(false);
@@ -196,7 +227,7 @@ export default function Results({ runs, onUpdate, onDelete, onReuse, onClearAll 
         (statusFilter === "active" ? ACTIVE.has(r.status) : statusFilter === "rated" ? !!r.rating : r.status === statusFilter)),
   );
 
-  const compareRuns = runs.filter((r) => selected.includes(r.id) && r.videoUrl);
+  const compareRuns = runs.filter((r) => selected.includes(r.id) && hasVideo(r));
 
   function exportCsv() {
     const blob = new Blob([runsToCsv(shown)], { type: "text/csv" });
@@ -241,13 +272,6 @@ export default function Results({ runs, onUpdate, onDelete, onReuse, onClearAll 
             <button onClick={() => setSelected([])} className="rounded-lg border border-line px-3 py-1.5 text-sm">Clear selection</button>
           )}
           <button onClick={exportCsv} disabled={!shown.length} className="rounded-lg border border-line px-3 py-1.5 text-sm disabled:opacity-40">Export CSV</button>
-          <button
-            onClick={() => confirm("Delete all runs saved in this browser?") && onClearAll()}
-            disabled={!runs.length}
-            className="rounded-lg border border-line px-3 py-1.5 text-sm text-muted hover:text-bad disabled:opacity-40"
-          >
-            Clear all
-          </button>
         </div>
       </div>
 
@@ -268,10 +292,12 @@ export default function Results({ runs, onUpdate, onDelete, onReuse, onClearAll 
               }
               onUpdate={(p) => onUpdate(r.id, p)}
               onDelete={() => {
+                if (!confirm(`Delete this ${r.modelName} run for the whole team?`)) return;
                 setSelected((s) => s.filter((x) => x !== r.id));
                 onDelete(r.id);
               }}
               onReuse={() => onReuse(r)}
+              onRetryArchive={() => onRetryArchive(r.id)}
             />
           ))}
         </div>

@@ -5,27 +5,33 @@ import InputsPanel from "@/components/InputsPanel";
 import ModelForm from "@/components/ModelForm";
 import ModelPicker from "@/components/ModelPicker";
 import Results from "@/components/Results";
+import { api } from "@/lib/api";
 import { extractText, makeAsset, type Asset } from "@/lib/extract";
-import { loadRuns, saveRuns } from "@/lib/history";
+import * as history from "@/lib/history";
 import { buildInput, collectFileRefs, initialValue, replaceFileRefs, schemaToFields, type FormField } from "@/lib/schema";
-import type { JobState, ModelDetail, ModelSummary, Provider, Run } from "@/lib/types";
+import type { ModelDetail, ModelSummary, PromptDraft, Provider, Run, RunInput } from "@/lib/types";
 import { uploadAsset } from "@/lib/upload";
+import { clearVideoCache } from "@/lib/videoCache";
 
 type Values = Record<string, unknown>;
 const ACTIVE = new Set(["uploading", "submitting", "queued", "running"]);
-const POLLABLE = new Set(["queued", "running"]);
 const PLACEHOLDER_URL = "https://placeholder.invalid/input";
+const REFRESH_MS = 20_000;
 const keyOf = (p: Provider, id: string) => `${p}:${id}`;
 
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(url, init);
-  if (res.status === 401) {
-    window.location.href = "/login";
-    throw new Error("Signed out");
-  }
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((body as { error?: string }).error ?? `Request failed (${res.status})`);
-  return body as T;
+// Runs whose row will still change: the provider job is in progress, or the
+// finished video is being copied into Storage.
+function needsPolling(r: Run): boolean {
+  if (r.jobId && (r.status === "queued" || r.status === "running")) return true;
+  if (r.status !== "completed") return false;
+  return r.archiveStatus === "pending" || r.archiveStatus === "uploading" || (r.archiveStatus === "failed" && !!r.archiveRetryAt);
+}
+
+// Server list wins; keep a run this browser just created that the list doesn't have yet.
+function mergeRuns(server: Run[], local: Run[]): Run[] {
+  const ids = new Set(server.map((r) => r.id));
+  const fresh = local.filter((r) => !ids.has(r.id) && ACTIVE.has(r.status) && Date.now() - r.createdAt < 120_000);
+  return [...fresh, ...server];
 }
 
 function isMedia(f: FormField) {
@@ -67,6 +73,7 @@ export default function Studio() {
   const [rejected, setRejected] = useState<string[]>([]);
   const [prompt, setPrompt] = useState("");
   const [preDraftPrompt, setPreDraftPrompt] = useState<string | null>(null);
+  const [promptDraft, setPromptDraft] = useState<PromptDraft | null>(null);
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState<string | null>(null);
 
@@ -76,6 +83,7 @@ export default function Studio() {
   const [notice, setNotice] = useState<string | null>(null);
 
   const [runs, setRuns] = useState<Run[]>([]);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const runsLoaded = useRef(false);
   const pendingReuse = useRef<Run | null>(null);
 
@@ -86,22 +94,48 @@ export default function Studio() {
         .then((r) => setModels((m) => ({ ...m, [p]: r.models })))
         .catch((e: Error) => setLoadError((l) => ({ ...l, [p]: e.message }))),
     );
-    const saved = loadRuns().map((r) =>
-      r.status === "uploading" || r.status === "submitting"
-        ? { ...r, status: "failed" as const, error: "Interrupted: the page closed before the job reached the provider." }
-        : r,
-    );
-    setRuns(saved);
+    // Cached copy first for an instant list, then the team's runs from Supabase.
+    setRuns(history.loadCachedRuns());
     runsLoaded.current = true;
   }, []);
 
+  const refreshRuns = useCallback(async () => {
+    try {
+      const server = await history.fetchRuns();
+      setRuns((local) => mergeRuns(server, local));
+      setSyncError(null);
+    } catch (e) {
+      setSyncError((e as Error).message);
+    }
+  }, []);
+
+  // Pick up teammates' runs while the tab is open.
   useEffect(() => {
-    if (runsLoaded.current) saveRuns(runs);
+    void refreshRuns();
+    const t = setInterval(() => document.visibilityState === "visible" && void refreshRuns(), REFRESH_MS);
+    return () => clearInterval(t);
+  }, [refreshRuns]);
+
+  useEffect(() => {
+    if (runsLoaded.current) history.cacheRuns(runs);
   }, [runs]);
 
   const updateRun = useCallback((id: string, patch: Partial<Run>) => {
     setRuns((rs) => rs.map((r) => (r.id === id ? { ...r, ...patch } : r)));
   }, []);
+
+  const replaceRun = useCallback((run: Run | null) => {
+    if (run) setRuns((rs) => rs.map((r) => (r.id === run.id ? run : r)));
+  }, []);
+
+  // Rating / notes from the Results screen: show at once, then save.
+  const editRun = useCallback(
+    (id: string, patch: Partial<Run>) => {
+      updateRun(id, patch);
+      history.patchRun(id, patch).then(replaceRun).catch((e: Error) => setSyncError(`Couldn't save your change: ${e.message}`));
+    },
+    [updateRun, replaceRun],
+  );
 
   // ---------- selected model ----------
   const fields = useMemo(() => schemaToFields(detail?.schema), [detail]);
@@ -282,9 +316,16 @@ export default function Studio() {
     }
     setDrafting(true);
     try {
-      const r = await api<{ prompt: string }>("/api/prompt", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload });
+      const r = await api<{ prompt: string; model?: string }>("/api/prompt", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload });
       setPreDraftPrompt(prompt);
       setPrompt(r.prompt);
+      setPromptDraft({
+        idea: prompt,
+        documents: documents.map((d) => d.name),
+        mediaFiles: media.map((a) => a.name),
+        model: r.model ?? "",
+        draftedPrompt: r.prompt,
+      });
     } catch (e) {
       setDraftError((e as Error).message);
     } finally {
@@ -324,21 +365,53 @@ export default function Studio() {
       ]),
     ];
 
+    const fieldOf = (a: Asset) => Object.entries(refs).find(([, list]) => list.includes(`asset:${a.id}`))?.[0];
+    const inputs: RunInput[] = usedAssets.map((a) => ({
+      field: fieldOf(a),
+      kind: a.kind as RunInput["kind"],
+      fileName: a.name,
+      contentType: a.type,
+      sizeBytes: a.size,
+    }));
+    const finalPrompt = promptField ? prompt.trim() : "";
     const run: Run = {
       id: crypto.randomUUID(),
       provider: detail.provider,
       modelId: detail.id,
       modelName: detail.name,
       modelFunction: detail.function,
-      prompt: promptField ? prompt.trim() : "",
+      prompt: finalPrompt,
       input: {},
       inputFileNames: usedAssets.map((a) => a.name),
+      promptDraft: promptDraft && finalPrompt ? promptDraft : undefined,
       status: usedAssets.length ? "uploading" : "submitting",
       createdAt: Date.now(),
     };
     setRuns((rs) => [run, ...rs]);
     setBusy(true);
     setNotice(null);
+    // Save the run first, so it exists for the team even if this tab closes mid-upload.
+    try {
+      replaceRun(
+        await history.createRun({
+          id: run.id,
+          provider: run.provider,
+          modelId: run.modelId,
+          modelName: run.modelName,
+          modelFunction: run.modelFunction,
+          prompt: run.prompt,
+          status: run.status as "uploading" | "submitting",
+          promptDraft: run.promptDraft,
+          inputs,
+        }),
+      );
+    } catch (e) {
+      setRuns((rs) => rs.filter((r) => r.id !== run.id));
+      setFormErrors([`Couldn't save the run, so nothing was sent: ${(e as Error).message}`]);
+      setBusy(false);
+      return;
+    }
+    let uploaded = false;
     try {
       const resolved: Record<string, string[]> = {};
       for (const [field, list] of Object.entries(refs)) {
@@ -357,28 +430,19 @@ export default function Studio() {
       for (const a of fileAssets) fileUrls[a.name] = await uploadAsset(a, detail.provider);
       const built = buildInput(fields, values, prompt, resolved).input;
       const input = fileAssets.length ? (replaceFileRefs(built, fileUrls) as Record<string, unknown>) : built;
+      const inputUrls = Object.fromEntries(usedAssets.flatMap((a) => (a.hosted[detail.provider] ? [[a.name, a.hosted[detail.provider]!]] : [])));
+      uploaded = true;
       updateRun(run.id, { status: "submitting", input });
 
-      let quotedUsd: number | undefined;
-      if (detail.provider === "pika") {
-        // Free check that also validates the body before any money is spent.
-        const q = await api<{ usd: number | null }>("/api/quote", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider: detail.provider, id: detail.id, input }),
-        });
-        quotedUsd = q.usd ?? undefined;
-      }
-      const { jobId } = await api<{ jobId: string }>("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider: detail.provider, id: detail.id, input }),
-      });
-      updateRun(run.id, { jobId, status: "queued", quotedUsd });
+      // The server quotes (Pika), submits, and records each step on the run.
+      replaceRun(await history.startRun(run.id, input, inputUrls));
       setNotice(`Started ${detail.name}. It will appear in Results when ready.`);
     } catch (e) {
-      updateRun(run.id, { status: "failed", error: (e as Error).message, finishedAt: Date.now() });
-      setFormErrors([(e as Error).message]);
+      const message = (e as Error).message;
+      updateRun(run.id, { status: "failed", error: message, finishedAt: Date.now() });
+      setFormErrors([message]);
+      // A failed submit is already saved by the server; a failed upload is saved here.
+      if (!uploaded) history.patchRun(run.id, { status: "failed", error: message }).then(replaceRun).catch(() => {});
     } finally {
       setBusy(false);
     }
@@ -387,26 +451,17 @@ export default function Studio() {
   // ---------- poll running jobs ----------
   const runsRef = useRef(runs);
   runsRef.current = runs;
-  const hasPollable = runs.some((r) => r.jobId && POLLABLE.has(r.status));
+  const hasPollable = runs.some(needsPolling);
   useEffect(() => {
     if (!hasPollable) return;
     let stopped = false;
     const tick = async () => {
-      const active = runsRef.current.filter((r) => r.jobId && POLLABLE.has(r.status));
+      const active = runsRef.current.filter(needsPolling);
       await Promise.all(
         active.map(async (r) => {
           try {
-            const j = await api<JobState>(`/api/jobs?provider=${r.provider}&id=${encodeURIComponent(r.jobId!)}`);
-            if (stopped) return;
-            const done = j.status === "completed" || j.status === "failed";
-            updateRun(r.id, {
-              status: j.status,
-              videoUrl: j.videoUrl,
-              error: j.error,
-              costUsd: j.costUsd,
-              runtimeS: j.runtimeS,
-              ...(done ? { finishedAt: Date.now() } : {}),
-            });
+            const updated = await history.pollRun(r.id);
+            if (!stopped) replaceRun(updated);
           } catch {
             // Network blip; try again next tick.
           }
@@ -419,7 +474,7 @@ export default function Studio() {
       stopped = true;
       clearInterval(t);
     };
-  }, [hasPollable, updateRun]);
+  }, [hasPollable, replaceRun]);
 
   // ---------- reuse a past run ----------
   function reuse(r: Run) {
@@ -447,6 +502,9 @@ export default function Studio() {
 
   async function signOut() {
     await fetch("/api/logout", { method: "POST" });
+    // Nothing from the team's library stays readable on this machine.
+    history.clearRunCache();
+    await clearVideoCache();
     window.location.href = "/login";
   }
 
@@ -506,7 +564,7 @@ export default function Studio() {
               onDraft={draftPrompt}
               drafting={drafting}
               draftError={draftError}
-              onUndoDraft={preDraftPrompt !== null ? () => { setPrompt(preDraftPrompt); setPreDraftPrompt(null); } : null}
+              onUndoDraft={preDraftPrompt !== null ? () => { setPrompt(preDraftPrompt); setPreDraftPrompt(null); setPromptDraft(null); } : null}
             />
             <div className="flex flex-col gap-3">
               <ModelForm
@@ -531,13 +589,29 @@ export default function Studio() {
             </div>
           </div>
         ) : (
-          <Results
-            runs={runs}
-            onUpdate={updateRun}
-            onDelete={(id) => setRuns((rs) => rs.filter((r) => r.id !== id))}
-            onReuse={reuse}
-            onClearAll={() => setRuns([])}
-          />
+          <>
+            {syncError && (
+              <div className="mb-3 rounded-xl border border-line bg-panel px-4 py-2 text-sm text-bad">
+                Couldn&apos;t reach the team library: {syncError}. Showing this browser&apos;s saved copy.
+              </div>
+            )}
+            <Results
+              runs={runs}
+              onUpdate={editRun}
+              onDelete={(id) => {
+                setRuns((rs) => rs.filter((r) => r.id !== id));
+                history.deleteRun(id).catch((e: Error) => {
+                  setSyncError(`Couldn't delete: ${e.message}`);
+                  void refreshRuns();
+                });
+              }}
+              onReuse={reuse}
+              onRetryArchive={(id) => {
+                updateRun(id, { archiveStatus: "pending", archiveError: undefined });
+                history.retryArchive(id).then(replaceRun).catch((e: Error) => setSyncError(e.message));
+              }}
+            />
+          </>
         )}
       </main>
     </div>

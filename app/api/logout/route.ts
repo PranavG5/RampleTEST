@@ -1,8 +1,7 @@
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE } from "@/lib/auth";
+import { signOut } from "@/lib/db";
 
 export async function POST() {
-  const res = NextResponse.json({ ok: true });
-  res.cookies.delete(SESSION_COOKIE);
-  return res;
+  await signOut().catch((e) => console.error("Sign out failed:", e));
+  return NextResponse.json({ ok: true });
 }

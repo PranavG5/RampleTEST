@@ -1,25 +1,16 @@
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE, checkCredentials, createSessionToken } from "@/lib/auth";
+import { signIn } from "@/lib/db";
 
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => ({}))) as { email?: string; password?: string };
-  if (!checkCredentials(body.email ?? "", body.password ?? "")) {
-    return NextResponse.json({ error: "Wrong email or password" }, { status: 401 });
+  if (!body.email || !body.password) {
+    return NextResponse.json({ error: "Enter your email and password" }, { status: 400 });
   }
-  let session: { token: string; maxAge: number };
   try {
-    session = await createSessionToken();
+    const { error } = await signIn(body.email, body.password);
+    if (error) return NextResponse.json({ error }, { status: 401 });
+    return NextResponse.json({ ok: true });
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 500 });
   }
-  const { token, maxAge } = session;
-  const res = NextResponse.json({ ok: true });
-  res.cookies.set(SESSION_COOKIE, token, {
-    httpOnly: true,
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    path: "/",
-    maxAge,
-  });
-  return res;
 }

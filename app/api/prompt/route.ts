@@ -73,7 +73,7 @@ export async function POST(req: Request) {
       .map((b) => (b.type === "text" ? b.text : ""))
       .join("")
       .trim();
-    return NextResponse.json({ prompt });
+    return NextResponse.json({ prompt, model: response.model });
   } catch (e) {
     if (e instanceof Anthropic.AuthenticationError) {
       return NextResponse.json({ error: "Anthropic rejected the API key" }, { status: 502 });

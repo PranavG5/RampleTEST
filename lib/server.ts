@@ -1,7 +1,6 @@
 import "server-only";
-import { cookies } from "next/headers";
 import { NextResponse } from "next/server";
-import { SESSION_COOKIE, verifySessionToken } from "./auth";
+import { currentUserId } from "./db";
 
 export class ProviderError extends Error {
   constructor(
@@ -14,8 +13,7 @@ export class ProviderError extends Error {
 
 // Second check on top of proxy.ts, so an API route is never reachable without a session.
 export async function requireSession(): Promise<NextResponse | null> {
-  const jar = await cookies();
-  if (await verifySessionToken(jar.get(SESSION_COOKIE)?.value)) return null;
+  if (await currentUserId()) return null;
   return NextResponse.json({ error: "Not signed in" }, { status: 401 });
 }
 

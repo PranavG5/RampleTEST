@@ -1,18 +1,18 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { SESSION_COOKIE, verifySessionToken } from "@/lib/auth";
+import { updateSession } from "@/lib/db/proxy";
 
-// Everything except the login page, login API and static assets needs a session.
+// Everything except the login page, login API and static assets needs a
+// Supabase session. This also refreshes an expiring session's cookies.
 export async function proxy(request: NextRequest) {
-  const ok = await verifySessionToken(request.cookies.get(SESSION_COOKIE)?.value);
-  if (ok) return NextResponse.next();
+  const { response, userId } = await updateSession(request);
+  if (userId) return response;
 
-  if (request.nextUrl.pathname.startsWith("/api/")) {
-    return NextResponse.json({ error: "Not signed in" }, { status: 401 });
-  }
-  const url = request.nextUrl.clone();
-  url.pathname = "/login";
-  url.search = "";
-  return NextResponse.redirect(url);
+  const denied = request.nextUrl.pathname.startsWith("/api/")
+    ? NextResponse.json({ error: "Not signed in" }, { status: 401 })
+    : NextResponse.redirect(Object.assign(request.nextUrl.clone(), { pathname: "/login", search: "" }));
+  // Carry over any cookie changes (for example clearing a dead session).
+  for (const c of response.cookies.getAll()) denied.cookies.set(c);
+  return denied;
 }
 
 export const config = {

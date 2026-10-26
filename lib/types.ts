@@ -37,6 +37,26 @@ export interface JobState {
   runtimeS?: number;
 }
 
+export type ArchiveStatus = "pending" | "uploading" | "stored" | "failed";
+
+// Context of a "Draft with Claude" prompt, saved with the run.
+export interface PromptDraft {
+  idea: string;
+  documents: string[];
+  mediaFiles: string[];
+  model: string;
+  draftedPrompt: string;
+}
+
+// An image/video sent to the model.
+export interface RunInput {
+  field?: string;
+  kind: "image" | "video";
+  fileName: string;
+  contentType?: string;
+  sizeBytes?: number;
+}
+
 export interface Run {
   id: string;
   provider: Provider;
@@ -46,14 +66,21 @@ export interface Run {
   prompt: string;
   input: Record<string, unknown>;
   inputFileNames: string[];
+  promptDraft?: PromptDraft;
   jobId?: string;
   status: RunStatus;
-  videoUrl?: string;
+  providerVideoUrl?: string; // provider CDN URL, expires after a few days
+  videoPath?: string; // object key in the private "videos" bucket once stored
+  videoBytes?: number;
+  archiveStatus?: ArchiveStatus;
+  archiveError?: string;
+  archiveRetryAt?: number; // set while an automatic retry of a failed copy is still due
   error?: string;
   quotedUsd?: number;
   costUsd?: number;
   runtimeS?: number;
   createdAt: number;
+  updatedAt?: number;
   finishedAt?: number;
   rating?: number; // 1-5
   notes?: string;
