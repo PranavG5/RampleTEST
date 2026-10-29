@@ -78,6 +78,15 @@ export async function cacheVideo(runId: string, url: string): Promise<void> {
   }
 }
 
+export async function removeCachedVideo(runId: string): Promise<void> {
+  try {
+    if (available()) await (await caches.open(CACHE)).delete(keyFor(runId));
+    const idx = readIndex();
+    delete idx[runId];
+    writeIndex(idx);
+  } catch {}
+}
+
 export async function clearVideoCache(): Promise<void> {
   try {
     if (available()) await caches.delete(CACHE);

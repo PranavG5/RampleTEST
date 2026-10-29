@@ -30,10 +30,31 @@ export function clearRunCache(): void {
   } catch {}
 }
 
-export async function fetchRuns(): Promise<Run[]> {
-  const { runs } = await api<{ runs: Run[] }>("/api/runs");
-  cacheRuns(runs);
-  return runs;
+// Full list, used on first load.
+export async function fetchRuns(): Promise<{ runs: Run[]; cursor: string }> {
+  return api<{ runs: Run[]; cursor: string }>("/api/runs");
+}
+
+// Only what changed since `cursor`, plus the ids of every run (to spot deletions).
+export async function fetchRunChanges(cursor: string): Promise<{ runs: Run[]; ids: string[]; cursor: string }> {
+  return api(`/api/runs?since=${encodeURIComponent(cursor)}`);
+}
+
+// Applies a change set: newer server versions replace local ones, runs missing
+// from `ids` were deleted by someone. A run this tab just created stays even if
+// the server hasn't listed it yet.
+export function mergeRunChanges(local: Run[], changed: Run[], ids: string[] | null): Run[] {
+  const alive = ids ? new Set(ids) : null;
+  const byId = new Map<string, Run>();
+  for (const r of local) {
+    const justCreated = Date.now() - r.createdAt < 120_000 && !r.updatedAt;
+    if (!alive || alive.has(r.id) || justCreated) byId.set(r.id, r);
+  }
+  for (const r of changed) {
+    const mine = byId.get(r.id);
+    if (!mine || (r.updatedAt ?? 0) >= (mine.updatedAt ?? 0)) byId.set(r.id, r);
+  }
+  return [...byId.values()].sort((a, b) => b.createdAt - a.createdAt);
 }
 
 export interface NewRunRequest {
@@ -66,8 +87,9 @@ export async function patchRun(runId: string, patch: Partial<Pick<Run, "rating" 
   return (await api<{ run: Run | null }>(`/api/runs/${runId}`, jsonBody("PATCH", body))).run;
 }
 
-export async function deleteRun(runId: string): Promise<void> {
-  await api(`/api/runs/${runId}`, { method: "DELETE" });
+// Permanent. The server refuses without the run id repeated as confirmation.
+export async function deleteRunPermanently(runId: string): Promise<{ videoRemoved: boolean }> {
+  return api(`/api/runs/${runId}`, jsonBody("DELETE", { confirm: runId }));
 }
 
 export async function retryArchive(runId: string): Promise<Run> {

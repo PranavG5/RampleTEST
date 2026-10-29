@@ -11,7 +11,7 @@ import * as history from "@/lib/history";
 import { buildInput, collectFileRefs, initialValue, replaceFileRefs, schemaToFields, type FormField } from "@/lib/schema";
 import type { ModelDetail, ModelSummary, PromptDraft, Provider, Run, RunInput } from "@/lib/types";
 import { uploadAsset } from "@/lib/upload";
-import { clearVideoCache } from "@/lib/videoCache";
+import { clearVideoCache, removeCachedVideo } from "@/lib/videoCache";
 
 type Values = Record<string, unknown>;
 const ACTIVE = new Set(["uploading", "submitting", "queued", "running"]);
@@ -27,12 +27,6 @@ function needsPolling(r: Run): boolean {
   return r.archiveStatus === "pending" || r.archiveStatus === "uploading" || (r.archiveStatus === "failed" && !!r.archiveRetryAt);
 }
 
-// Server list wins; keep a run this browser just created that the list doesn't have yet.
-function mergeRuns(server: Run[], local: Run[]): Run[] {
-  const ids = new Set(server.map((r) => r.id));
-  const fresh = local.filter((r) => !ids.has(r.id) && ACTIVE.has(r.status) && Date.now() - r.createdAt < 120_000);
-  return [...fresh, ...server];
-}
 
 function isMedia(f: FormField) {
   return f.kind === "media" || f.kind === "mediaList";
@@ -85,6 +79,7 @@ export default function Studio() {
   const [runs, setRuns] = useState<Run[]>([]);
   const [syncError, setSyncError] = useState<string | null>(null);
   const runsLoaded = useRef(false);
+  const syncCursor = useRef<string | null>(null);
   const pendingReuse = useRef<Run | null>(null);
 
   // ---------- load model lists + history ----------
@@ -99,10 +94,18 @@ export default function Studio() {
     runsLoaded.current = true;
   }, []);
 
+  // First call loads everything; later calls fetch only what changed.
   const refreshRuns = useCallback(async () => {
     try {
-      const server = await history.fetchRuns();
-      setRuns((local) => mergeRuns(server, local));
+      if (syncCursor.current) {
+        const { runs: changed, ids, cursor } = await history.fetchRunChanges(syncCursor.current);
+        syncCursor.current = cursor;
+        setRuns((local) => history.mergeRunChanges(local, changed, ids));
+      } else {
+        const { runs: all, cursor } = await history.fetchRuns();
+        syncCursor.current = cursor;
+        setRuns((local) => history.mergeRunChanges(local, all, all.map((r) => r.id)));
+      }
       setSyncError(null);
     } catch (e) {
       setSyncError((e as Error).message);
@@ -125,7 +128,15 @@ export default function Studio() {
   }, []);
 
   const replaceRun = useCallback((run: Run | null) => {
-    if (run) setRuns((rs) => rs.map((r) => (r.id === run.id ? run : r)));
+    if (run) setRuns((rs) => history.mergeRunChanges(rs, [run], null));
+  }, []);
+
+  // Permanent delete, called after the typed confirmation in Results.
+  const deleteRun = useCallback(async (id: string) => {
+    const { videoRemoved } = await history.deleteRunPermanently(id);
+    setRuns((rs) => rs.filter((r) => r.id !== id));
+    void removeCachedVideo(id);
+    if (!videoRemoved) setSyncError("The run was deleted, but its video file couldn't be removed from Storage. It will stay there until someone removes it in the Supabase dashboard.");
   }, []);
 
   // Rating / notes from the Results screen: show at once, then save.
@@ -598,13 +609,7 @@ export default function Studio() {
             <Results
               runs={runs}
               onUpdate={editRun}
-              onDelete={(id) => {
-                setRuns((rs) => rs.filter((r) => r.id !== id));
-                history.deleteRun(id).catch((e: Error) => {
-                  setSyncError(`Couldn't delete: ${e.message}`);
-                  void refreshRuns();
-                });
-              }}
+              onDelete={deleteRun}
               onReuse={reuse}
               onRetryArchive={(id) => {
                 updateRun(id, { archiveStatus: "pending", archiveError: undefined });

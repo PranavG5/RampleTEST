@@ -44,6 +44,25 @@ async function resumableUpload(path: string, bytes: Uint8Array, contentType: str
   });
 }
 
+// Removes every file stored for a run (runs/{id}/...) and checks the folder is
+// empty afterwards, retrying a few times. Returns false if files remain.
+export async function removeRunVideos(runId: string, knownPath: string | null): Promise<boolean> {
+  const bucket = adminClient().storage.from(VIDEO_BUCKET);
+  const folder = `runs/${runId}`;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const { data: listed, error: listError } = await bucket.list(folder);
+    const paths = new Set(knownPath ? [knownPath] : []);
+    for (const f of listed ?? []) paths.add(`${folder}/${f.name}`);
+    const { error: removeError } = paths.size ? await bucket.remove([...paths]) : { error: null };
+    const { data: left, error: checkError } = await bucket.list(folder);
+    const problem = listError ?? removeError ?? checkError;
+    if (!problem && !left?.length) return true;
+    console.error(`Removing videos for run ${runId} failed (attempt ${attempt}):`, problem?.message ?? `${left?.length} file(s) left`);
+    await new Promise((r) => setTimeout(r, 500 * attempt));
+  }
+  return false;
+}
+
 export async function signedVideoUrl(path: string, opts: { download?: string } = {}): Promise<string> {
   const supabase = await userClient();
   const { data, error } = await supabase.storage

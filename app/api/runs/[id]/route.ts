@@ -1,8 +1,10 @@
 import { NextResponse } from "next/server";
-import { deleteRun, updateRun, type RunPatch } from "@/lib/db";
+import { DeleteBlockedError, permanentlyDeleteRun, removeRunVideos, updateRun, type RunPatch } from "@/lib/db";
 import { errorResponse, ProviderError, requireSession } from "@/lib/server";
 
 type Ctx = { params: Promise<{ id: string }> };
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 // Edits from the Results screen (rating, notes, tags), or marking a run failed
 // when the browser couldn't upload its input files.
@@ -38,14 +40,23 @@ export async function PATCH(req: Request, { params }: Ctx) {
   }
 }
 
-// Soft delete: hidden for the whole team, recoverable in the database.
-export async function DELETE(_req: Request, { params }: Ctx) {
+// Permanent delete of one run and its video. Unrecoverable, so the request must
+// repeat the run's id as { confirm: "<id>" } (the UI only sends it after the
+// typed confirmation), and it is refused while the run is still in progress.
+export async function DELETE(req: Request, { params }: Ctx) {
   const denied = await requireSession();
   if (denied) return denied;
   try {
-    await deleteRun((await params).id);
-    return NextResponse.json({ ok: true });
+    const { id } = await params;
+    if (!UUID.test(id)) throw new ProviderError(400, "Invalid run id");
+    const body = (await req.json().catch(() => ({}))) as { confirm?: unknown };
+    if (body.confirm !== id) throw new ProviderError(400, "Deleting needs confirmation: send { confirm: <run id> }.");
+    const { videoPath } = await permanentlyDeleteRun(id);
+    const videoRemoved = await removeRunVideos(id, videoPath);
+    if (!videoRemoved) console.error(`Run ${id} deleted but its video files could not be removed.`);
+    return NextResponse.json({ ok: true, videoRemoved });
   } catch (e) {
+    if (e instanceof DeleteBlockedError) return NextResponse.json({ error: e.message }, { status: e.status });
     return errorResponse(e);
   }
 }

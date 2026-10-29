@@ -1,6 +1,6 @@
 import "server-only";
 import type { ArchiveStatus, PromptDraft, Provider, Run, RunInput, RunStatus } from "../types";
-import { userClient } from "./client";
+import { adminClient, userClient } from "./client";
 
 // Runs table access. Every call acts as the signed-in user, so RLS applies.
 
@@ -36,6 +36,11 @@ interface RunRow {
 
 const SELECT = "*, run_inputs(id, file_name)";
 const INTERRUPTED_AFTER_MS = 15 * 60 * 1000;
+const PAGE = 500;
+const MAX_RUNS = 5000;
+// Rows can commit with an updated_at slightly older than the newest one already
+// seen, so each incremental check looks back this far (duplicates are harmless).
+const CHANGES_OVERLAP_MS = 30_000;
 
 const time = (t: string | null) => (t ? Date.parse(t) : undefined);
 const num = (v: number | string | null) => (v === null ? undefined : Number(v));
@@ -169,26 +174,73 @@ export async function getRun(id: string): Promise<Run | null> {
   return data ? toRun(data as RunRow) : null;
 }
 
-export async function listRuns(limit = 500): Promise<Run[]> {
+// A run stuck before reaching the provider means the browser that started it closed.
+async function failInterruptedRuns(): Promise<void> {
   const supabase = await userClient();
-  // A run stuck before reaching the provider means the browser that started it closed.
   const cutoff = new Date(Date.now() - INTERRUPTED_AFTER_MS).toISOString();
-  const { error: sweepError } = await supabase
+  const { error } = await supabase
     .from("runs")
     .update({ status: "failed", error: "Interrupted: the page closed before the job reached the provider.", finished_at: new Date().toISOString() })
     .in("status", ["uploading", "submitting"])
     .lt("created_at", cutoff)
     .is("deleted_at", null);
-  if (sweepError) console.error("Interrupted-run sweep failed:", sweepError.message);
+  if (error) console.error("Interrupted-run sweep failed:", error.message);
+}
 
+// Where the next incremental check starts: just before the newest change seen.
+function nextCursor(runs: Run[], previous?: string): string {
+  const newest = Math.max(0, ...runs.map((r) => r.updatedAt ?? 0));
+  if (!newest) return previous ?? new Date(Date.now() - CHANGES_OVERLAP_MS).toISOString();
+  return new Date(newest - CHANGES_OVERLAP_MS).toISOString();
+}
+
+// Every visible run, newest first, fetched in pages.
+export async function listRuns(): Promise<{ runs: Run[]; cursor: string }> {
+  await failInterruptedRuns();
+  const supabase = await userClient();
+  const runs: Run[] = [];
+  for (let from = 0; from < MAX_RUNS; from += PAGE) {
+    const { data, error } = await supabase
+      .from("runs")
+      .select(SELECT)
+      .is("deleted_at", null)
+      .order("created_at", { ascending: false })
+      .order("id")
+      .range(from, from + PAGE - 1);
+    if (error) fail("Couldn't load runs", error);
+    runs.push(...(data as RunRow[]).map(toRun));
+    if (data.length < PAGE) break;
+  }
+  return { runs, cursor: nextCursor(runs) };
+}
+
+// What changed since `since`, plus the ids of every visible run so the browser
+// can drop runs that were deleted. Much smaller than the full list.
+export async function listRunChanges(since: string): Promise<{ runs: Run[]; ids: string[]; cursor: string }> {
+  await failInterruptedRuns();
+  const supabase = await userClient();
   const { data, error } = await supabase
     .from("runs")
     .select(SELECT)
     .is("deleted_at", null)
-    .order("created_at", { ascending: false })
-    .limit(limit);
-  if (error) fail("Couldn't load runs", error);
-  return (data as RunRow[]).map(toRun);
+    .gt("updated_at", since)
+    .order("updated_at", { ascending: true })
+    .limit(MAX_RUNS);
+  if (error) fail("Couldn't load changed runs", error);
+  const ids: string[] = [];
+  for (let from = 0; from < MAX_RUNS; from += 5 * PAGE) {
+    const { data: page, error: idsError } = await supabase
+      .from("runs")
+      .select("id")
+      .is("deleted_at", null)
+      .order("id")
+      .range(from, from + 5 * PAGE - 1);
+    if (idsError) fail("Couldn't load run ids", idsError);
+    ids.push(...(page as { id: string }[]).map((r) => r.id));
+    if (page.length < 5 * PAGE) break;
+  }
+  const runs = (data as RunRow[]).map(toRun);
+  return { runs, ids, cursor: nextCursor(runs, since) };
 }
 
 // Applies the patch and returns the updated run. With onlyIfStatusIn, the update
@@ -211,11 +263,46 @@ export async function setInputUrls(runId: string, urls: Record<string, string>):
   }
 }
 
-// Soft delete: hidden from the app for everyone, but the row and video stay recoverable.
-export async function deleteRun(id: string): Promise<void> {
-  const supabase = await userClient();
-  const { error } = await supabase.from("runs").update({ deleted_at: new Date().toISOString() }).eq("id", id);
+export class DeleteBlockedError extends Error {
+  constructor(
+    public status: 404 | 409,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+// Permanently removes a run row (with its status history and input records)
+// and returns its video's storage path, if any, for the caller to remove.
+// Refused while the provider is still generating or the video is being copied
+// into Storage, so a delete can never race the upload and leave a stray file.
+// Signed-in users have no DELETE rights (see the guardrails migration), so
+// this runs with the secret key; the API route checks the session first.
+export async function permanentlyDeleteRun(id: string): Promise<{ videoPath: string | null }> {
+  const admin = adminClient();
+  const { data, error } = await admin
+    .from("runs")
+    .delete()
+    .eq("id", id)
+    .in("status", ["completed", "failed"])
+    .or("archive_status.is.null,archive_status.eq.stored,archive_status.eq.failed")
+    .select("id, video_path");
   if (error) fail("Couldn't delete the run", error);
+  const row = (data as { id: string; video_path: string | null }[])[0];
+  if (row) return { videoPath: row.video_path };
+
+  // Nothing deleted: say why.
+  const { data: current, error: readError } = await admin
+    .from("runs")
+    .select("status, archive_status")
+    .eq("id", id)
+    .maybeSingle();
+  if (readError) fail("Couldn't check the run", readError);
+  if (!current) throw new DeleteBlockedError(404, "This run doesn't exist (maybe someone already deleted it).");
+  if (current.status !== "completed" && current.status !== "failed") {
+    throw new DeleteBlockedError(409, "This video is still being generated. Delete it once it has finished or failed.");
+  }
+  throw new DeleteBlockedError(409, "This video is being saved to the team library right now. Try again in a minute.");
 }
 
 // "Retry save" after the automatic retries gave up.

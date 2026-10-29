@@ -1,5 +1,5 @@
 import { after, NextResponse } from "next/server";
-import { createRun, listRuns, retryDueArchives, type NewRun } from "@/lib/db";
+import { createRun, listRunChanges, listRuns, retryDueArchives, type NewRun } from "@/lib/db";
 import { parseProvider } from "@/lib/providers";
 import { errorResponse, isSafeModelId, ProviderError, requireSession } from "@/lib/server";
 import type { PromptDraft, RunInput } from "@/lib/types";
@@ -11,14 +11,17 @@ const str = (v: unknown, max: number) => (typeof v === "string" ? v.slice(0, max
 const strList = (v: unknown, maxItems: number, maxLen: number) =>
   Array.isArray(v) ? v.filter((x): x is string => typeof x === "string").slice(0, maxItems).map((x) => x.slice(0, maxLen)) : [];
 
-// The team's run history, newest first.
-export async function GET() {
+// The team's run history, newest first. With ?since=<cursor from a previous
+// response>, only the runs changed since then plus the ids of all runs, so an
+// open tab refreshing every few seconds stays light on Supabase egress.
+export async function GET(req: Request) {
   const denied = await requireSession();
   if (denied) return denied;
   try {
-    const runs = await listRuns();
+    const since = new URL(req.url).searchParams.get("since");
+    const body = since && !Number.isNaN(Date.parse(since)) ? await listRunChanges(new Date(since).toISOString()) : await listRuns();
     after(() => retryDueArchives());
-    return NextResponse.json({ runs });
+    return NextResponse.json(body);
   } catch (e) {
     return errorResponse(e);
   }
