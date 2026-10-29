@@ -33,6 +33,19 @@ export function secretKey(): string {
   return process.env.SUPABASE_SECRET_KEY?.trim() || required("SUPABASE_SERVICE_ROLE_KEY");
 }
 
+// Plan quotas shown in Settings -> Storage. Free plan: 1 GB file storage and
+// 500 MB database. On Pro set SUPABASE_STORAGE_QUOTA_GB=100, SUPABASE_DATABASE_QUOTA_MB=8192.
+export function planQuotas(): { storageBytes: number; databaseBytes: number } {
+  const num = (name: string, fallback: number) => {
+    const v = Number(process.env[name]);
+    return Number.isFinite(v) && v > 0 ? v : fallback;
+  };
+  return {
+    storageBytes: num("SUPABASE_STORAGE_QUOTA_GB", 1) * 1024 ** 3,
+    databaseBytes: num("SUPABASE_DATABASE_QUOTA_MB", 500) * 1024 ** 2,
+  };
+}
+
 // Largest video the bucket accepts. The Free plan caps every file at 50 MB.
 export function videoMaxBytes(): number {
   const mb = Number(process.env.VIDEO_MAX_MB);

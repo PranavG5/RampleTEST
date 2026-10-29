@@ -78,6 +78,12 @@ export async function cacheVideo(runId: string, url: string): Promise<void> {
   }
 }
 
+// How much this browser's video cache holds (for Settings -> Storage).
+export function videoCacheUsage(): { files: number; bytes: number; maxBytes: number } {
+  const entries = Object.values(readIndex());
+  return { files: entries.length, bytes: entries.reduce((n, e) => n + e.bytes, 0), maxBytes: MAX_BYTES };
+}
+
 export async function removeCachedVideo(runId: string): Promise<void> {
   try {
     if (available()) await (await caches.open(CACHE)).delete(keyFor(runId));

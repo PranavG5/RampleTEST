@@ -19,7 +19,7 @@ An internal site for the UI/UX team to test **every Pika and Higgsfield video mo
    - Secret key (`sb_secret_...`) → `SUPABASE_SECRET_KEY`. **Server only:** never put it in client code or give it a `NEXT_PUBLIC_` prefix.
 3. **Create the tables, policies and bucket.** Either:
    - **Supabase CLI** (installed with `npm install`): `npx supabase login`, `npx supabase link --project-ref <your-ref>`, then `npm run db:push`. Or:
-   - **SQL Editor:** paste and run `supabase/migrations/20261026000001_runs.sql`, then `supabase/migrations/20261026000002_videos_bucket.sql`, then `supabase/migrations/20261029000001_guardrails.sql`. The last one asks you to confirm because it replaces policies ("Run query"); it is safe to run more than once.
+   - **SQL Editor:** paste and run `supabase/migrations/20261026000001_runs.sql`, then `supabase/migrations/20261026000002_videos_bucket.sql`, then `supabase/migrations/20261029000001_guardrails.sql`, then `supabase/migrations/20261029000002_usage_stats.sql`. The guardrails file asks you to confirm because it replaces policies ("Run query"); every file is safe to run more than once.
 4. **Turn off sign-ups:** **Authentication → Sign In / Providers →** switch off **Allow new users to sign up**. Leave the **Email** provider itself on (turning it off disables sign-in too).
 5. **Create the team login** (put the URL and secret key in `.env.local` first):
 
@@ -43,6 +43,7 @@ An internal site for the UI/UX team to test **every Pika and Higgsfield video mo
    | `SUPABASE_PUBLISHABLE_KEY` | Supabase publishable key (`sb_publishable_...`) |
    | `SUPABASE_SECRET_KEY` | Supabase secret key (`sb_secret_...`), server only |
    | `VIDEO_MAX_MB` | Optional, default 50. Raise it only on a paid plan, together with the bucket's size limit |
+   | `SUPABASE_STORAGE_QUOTA_GB` / `SUPABASE_DATABASE_QUOTA_MB` | Optional, default 1 / 500 (Free plan). Only used by Settings → Storage; on Pro set 100 / 8192 |
 
    Also connect a **Vercel Blob** store (Project → Storage → Create Database → Blob → connect to this project, then redeploy). Pika's storage only accepts browser uploads from Pika's own site, so Pika inputs are uploaded to Blob and Pika reads them from there. Without it, Pika uploads are limited to 4 MB. Higgsfield uploads don't need it.
 
@@ -104,6 +105,17 @@ scripts/sync-higgsfield.mjs  rebuilds the Higgsfield model list
 - **Videos** are copied from the provider into the private `videos` bucket (`runs/{run_id}/output.mp4`) in the background as soon as a job finishes. Files over 6 MB use resumable (TUS) uploads. If a copy fails, the run keeps the provider's URL (which still plays), and the copy is retried with backoff up to 5 times, then offered as "Retry save". Videos are only ever served through signed URLs that expire after 10 minutes.
 - **Local cache.** The browser keeps the run list in localStorage (shown instantly, then kept current by asking Supabase every 20 s for only the runs that changed) and keeps each video it has played in the Cache API, so re-watching doesn't download again. Signing out clears both.
 - **Access.** Every signed-in user can read every run and video and create or edit runs (one shared team workspace). Anonymous requests get nothing, at the API and at the database (RLS).
+
+### Checking storage
+
+**Settings** (top right, next to Sign out) shows live, read-only numbers:
+- Supabase file storage and database size against the plan's quota;
+- saved videos, their average size and roughly how many more fit;
+- space per model, every Storage bucket and each table;
+- files that use space but don't show in Results;
+- the Vercel Blob input uploads and this browser's video cache.
+
+A small dot appears on Settings when storage or the database reaches 80% of its quota. Downloads (egress) are only on Supabase's own usage page, which the panel links to. It needs `20261029000002_usage_stats.sql`; until that's run, the panel says so.
 
 ### Deleting, and what protects videos
 

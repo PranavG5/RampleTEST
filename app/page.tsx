@@ -5,12 +5,14 @@ import InputsPanel from "@/components/InputsPanel";
 import ModelForm from "@/components/ModelForm";
 import ModelPicker from "@/components/ModelPicker";
 import Results from "@/components/Results";
+import SettingsPanel, { nearQuota } from "@/components/SettingsPanel";
 import { api } from "@/lib/api";
 import { extractText, makeAsset, type Asset } from "@/lib/extract";
 import * as history from "@/lib/history";
 import { buildInput, collectFileRefs, initialValue, replaceFileRefs, schemaToFields, type FormField } from "@/lib/schema";
 import type { ModelDetail, ModelSummary, PromptDraft, Provider, Run, RunInput } from "@/lib/types";
 import { uploadAsset } from "@/lib/upload";
+import type { UsageReport } from "@/lib/usage";
 import { clearVideoCache, removeCachedVideo } from "@/lib/videoCache";
 
 type Values = Record<string, unknown>;
@@ -80,6 +82,14 @@ export default function Studio() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const runsLoaded = useRef(false);
   const syncCursor = useRef<string | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [usageWarning, setUsageWarning] = useState(false);
+  const onUsageReport = useCallback((r: UsageReport) => setUsageWarning(nearQuota(r)), []);
+
+  // One quiet check per page load: a dot on Settings only when storage is nearly full.
+  useEffect(() => {
+    api<UsageReport>("/api/usage?summary=1").then(onUsageReport).catch(() => {});
+  }, [onUsageReport]);
   const pendingReuse = useRef<Run | null>(null);
 
   // ---------- load model lists + history ----------
@@ -544,7 +554,20 @@ export default function Studio() {
               </button>
             ))}
           </nav>
-          <button onClick={signOut} className="ml-auto whitespace-nowrap text-sm text-muted hover:text-fg">Sign out</button>
+          <button
+            onClick={() => setSettingsOpen(true)}
+            className="relative ml-auto flex items-center gap-1 whitespace-nowrap text-sm text-muted hover:text-fg"
+            aria-label={usageWarning ? "Settings (storage is nearly full)" : "Settings"}
+            title={usageWarning ? "Storage is nearly full" : "Settings"}
+          >
+            <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+            </svg>
+            <span className="hidden sm:inline">Settings</span>
+            {usageWarning && <span className="absolute -right-1.5 -top-1 h-2 w-2 rounded-full bg-warn" />}
+          </button>
+          <button onClick={signOut} className="whitespace-nowrap text-sm text-muted hover:text-fg">Sign out</button>
         </div>
       </header>
 
@@ -619,6 +642,7 @@ export default function Studio() {
           </>
         )}
       </main>
+      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} onReport={onUsageReport} />}
     </div>
   );
 }
