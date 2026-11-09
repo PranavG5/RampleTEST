@@ -7,7 +7,8 @@ An internal site for the UI/UX team to test **every Pika and Higgsfield video mo
 - **Optional Claude helper.** "Draft with Claude" reads the documents and your rough idea, then writes a prompt for the selected model. You can edit or undo it. The video itself always comes from the one model you picked.
 - **Same prompt, many models.** The prompt stays put when you switch models, so comparisons are fair.
 - **Results, shared by the team.** Every run is saved to Supabase with its model, settings, status history, time taken and cost, and the finished video is copied into a private Supabase Storage bucket so it outlives the provider's expiring link. You can rate it 1 to 5, add notes, compare 2 to 6 videos side by side with synced playback, reuse its settings, and export everything to CSV. Search, filter (provider, model, type, status, rating), sort (newest, oldest, model, rating, cost, speed) and group by model; each browser remembers its choices.
-- **Cost check.** Pika runs show the exact price before you click Generate, using Pika's free quote endpoint. Higgsfield doesn't publish per-request prices.
+- **Cost check.** Pika runs show the exact price before you click Generate, using Pika's free quote endpoint. With a video input the price depends on that video's length, so it's taken at Generate with the real file instead. In the model list, per-second and per-run prices show as "from $X/sec" etc.; models Pika prices per token or per megapixel show Pika's quote for one typical video ("≈ $1.33 per 5s 720p video"). After a run, the card shows what Pika actually charged. Higgsfield doesn't publish per-request prices.
+- **Spending.** Settings → Spending adds up what the team has spent: total, this month, last 30 days, per provider, per model and per month. It uses each run's confirmed Pika charge (or Pika's quote until the charge is confirmed) and keeps counting runs after they're deleted.
 - **Sign-in.** Supabase Auth, email and password. Sign-ups are off; the team account is created with `npm run create-user`.
 
 ## Set up Supabase (once)
@@ -19,7 +20,7 @@ An internal site for the UI/UX team to test **every Pika and Higgsfield video mo
    - Secret key (`sb_secret_...`) → `SUPABASE_SECRET_KEY`. **Server only:** never put it in client code or give it a `NEXT_PUBLIC_` prefix.
 3. **Create the tables, policies and bucket.** Either:
    - **Supabase CLI** (installed with `npm install`): `npx supabase login`, `npx supabase link --project-ref <your-ref>`, then `npm run db:push`. Or:
-   - **SQL Editor:** paste and run `supabase/migrations/20261026000001_runs.sql`, then `supabase/migrations/20261026000002_videos_bucket.sql`, then `supabase/migrations/20261029000001_guardrails.sql`, then `supabase/migrations/20261029000002_usage_stats.sql`. The guardrails file asks you to confirm because it replaces policies ("Run query"); every file is safe to run more than once.
+   - **SQL Editor:** paste and run `supabase/migrations/20261026000001_runs.sql`, then `supabase/migrations/20261026000002_videos_bucket.sql`, then `supabase/migrations/20261029000001_guardrails.sql`, then `supabase/migrations/20261029000002_usage_stats.sql`, then `supabase/migrations/20261109000001_spending.sql`. The guardrails file asks you to confirm because it replaces policies ("Run query"); every file is safe to run more than once.
 4. **Turn off sign-ups:** **Authentication → Sign In / Providers →** switch off **Allow new users to sign up**. Leave the **Email** provider itself on (turning it off disables sign-in too).
 5. **Create the team login** (put the URL and secret key in `.env.local` first):
 
@@ -116,6 +117,8 @@ scripts/sync-higgsfield.mjs  rebuilds the Higgsfield model list
 - the Vercel Blob input uploads and this browser's video cache.
 
 A small dot appears on Settings when storage or the database reaches 80% of its quota. Downloads (egress) are only on Supabase's own usage page, which the panel links to. It needs `20261029000002_usage_stats.sql`; until that's run, the panel says so.
+
+The **Spending** tab in the same panel needs `20261109000001_spending.sql`. "Confirmed" amounts are the charges Pika reported per job; a finished run Pika hasn't confirmed yet counts at its Generate-time quote, and the app keeps asking Pika for up to 15 minutes after a run finishes. A permanently deleted run leaves a small cost record (`deleted_run_costs`) so totals never drop. Higgsfield runs are counted but not priced.
 
 ### Deleting, and what protects videos
 

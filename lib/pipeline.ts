@@ -1,5 +1,6 @@
 import "server-only";
 import { after } from "next/server";
+import { awaitingCost } from "./cost";
 import { archiveVideo, getRun, setInputUrls, updateRun } from "./db";
 import { jobStatus, quote, submit } from "./providers";
 import { ProviderError } from "./server";
@@ -84,6 +85,12 @@ export async function pollRun(runId: string): Promise<Run> {
         { onlyIfStatusIn: ["queued", "running"] },
       );
       run = updated ?? (await mustGet(runId));
+    }
+  } else if (awaitingCost(run)) {
+    // Finished, but Pika hadn't confirmed the charge yet: ask again.
+    const j = await jobStatus(run.provider, run.jobId!);
+    if (j.costUsd !== undefined) {
+      run = (await updateRun(runId, { costUsd: j.costUsd, ...(j.runtimeS !== undefined ? { runtimeS: j.runtimeS } : {}) })) ?? run;
     }
   }
   scheduleArchive(run);

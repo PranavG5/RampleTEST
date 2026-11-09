@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { PROVIDER_LABEL, type Provider } from "@/lib/types";
+import type { SpendingStats } from "@/lib/db/spending";
 import type { UsageReport } from "@/lib/usage";
 import { videoCacheUsage } from "@/lib/videoCache";
 
@@ -72,11 +73,118 @@ function Row({ label, value }: { label: string; value: string }) {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
+const money = (n: number) => (n > 0 && n < 0.01 ? "<$0.01" : `$${n.toFixed(2)}`);
+const spent = (b: { exact: number; estimated: number }) => Number(b.exact) + Number(b.estimated);
+const monthLabel = (m: string) => new Date(`${m}-01T00:00:00Z`).toLocaleDateString([], { month: "short", year: "numeric", timeZone: "UTC" });
+
+// Settings -> Spending: what the team has spent on generations, from each
+// run's confirmed Pika charge (or Pika's quote until it's confirmed).
+function SpendingTab({ refreshKey }: { refreshKey: number }) {
+  const [data, setData] = useState<{ stats: SpendingStats | null } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setError(null);
+    api<{ stats: SpendingStats | null }>("/api/spending")
+      .then((d) => !cancelled && setData(d))
+      .catch((e: Error) => !cancelled && setError(e.message));
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshKey]);
+
+  if (error) return <p className="mt-4 text-sm text-bad">Couldn&apos;t load spending: {error}</p>;
+  if (!data) return <p className="mt-4 text-sm text-muted">Adding up spending…</p>;
+  if (!data.stats) {
+    return (
+      <div className="mt-4 rounded-lg bg-panel-2 p-3 text-sm">
+        <p className="font-medium">One-time setup needed</p>
+        <p className="mt-1 text-muted">
+          To see spending here, run <span className="font-mono text-xs">supabase/migrations/20261109000001_spending.sql</span> once in the Supabase SQL Editor.
+        </p>
+      </div>
+    );
+  }
+
+  const { totals, by_provider, by_model, by_month } = data.stats;
+  return (
+    <div className="mt-4 flex flex-col gap-4">
+      <div>
+        <div className="text-3xl font-semibold tabular-nums">{money(spent(totals.total))}</div>
+        <p className="text-sm text-muted">
+          spent in total on {plural(Number(totals.total.runs), "run")} · {money(Number(totals.total.exact))} confirmed by Pika
+          {Number(totals.total.estimated) > 0 && <> · {money(Number(totals.total.estimated))} estimated</>}
+        </p>
+      </div>
+
+      <Section title="Recent">
+        <Row label="This month (UTC)" value={`${money(spent(totals.this_month))} · ${plural(Number(totals.this_month.runs), "run")}`} />
+        <Row label="Last 30 days" value={`${money(spent(totals.last_30_days))} · ${plural(Number(totals.last_30_days.runs), "run")}`} />
+      </Section>
+
+      <Section title="By provider">
+        {by_provider.map((p) => (
+          <Row
+            key={p.provider}
+            label={PROVIDER_LABEL[p.provider as Provider] ?? p.provider}
+            value={
+              spent(p) === 0 && Number(p.unpriced) > 0
+                ? `${plural(Number(p.runs), "run")} · price not reported`
+                : `${money(spent(p))} · ${plural(Number(p.runs), "run")}`
+            }
+          />
+        ))}
+      </Section>
+
+      {by_model.length > 0 && (
+        <Section title="By model">
+          {by_model.map((m) => (
+            <Row
+              key={`${m.provider}:${m.model}`}
+              label={`${m.model} (${PROVIDER_LABEL[m.provider as Provider] ?? m.provider})`}
+              value={`${spent(m) ? money(spent(m)) : "–"} · ${plural(Number(m.runs), "run")}`}
+            />
+          ))}
+        </Section>
+      )}
+
+      {by_month.length > 0 && (
+        <Section title="By month (UTC)">
+          {by_month.map((m) => (
+            <Row key={m.month} label={monthLabel(m.month)} value={`${money(spent(m))} · ${plural(Number(m.runs), "run")}`} />
+          ))}
+        </Section>
+      )}
+
+      <p className="border-t border-line pt-3 text-xs text-muted">
+        &quot;Confirmed&quot; is the charge Pika reported for each job. &quot;Estimated&quot; is Pika&apos;s quote at Generate, used until Pika confirms the
+        charge. Includes runs that were deleted later
+        {Number(totals.deleted.runs) > 0 ? ` (${plural(Number(totals.deleted.runs), "run")}, ${money(spent(totals.deleted))})` : ""}.
+        {Number(totals.total.unpriced) > 0 && (
+          <>
+            {" "}
+            {plural(Number(totals.total.unpriced), "finished run")} {Number(totals.total.unpriced) === 1 ? "has" : "have"} no price because Higgsfield
+            doesn&apos;t report prices to the app; see{" "}
+            <a href="https://console.higgsfield.ai" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+              console.higgsfield.ai ↗
+            </a>
+            .
+          </>
+        )}
+      </p>
+    </div>
+  );
+}
+
 export default function SettingsPanel({ onClose, onReport }: { onClose: () => void; onReport: (r: UsageReport) => void }) {
   const [report, setReport] = useState<UsageReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [cache, setCache] = useState<ReturnType<typeof videoCacheUsage> | null>(null);
+
+  const [tab, setTab] = useState<"storage" | "spending">("storage");
+  const [spendKey, setSpendKey] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -115,14 +223,35 @@ export default function SettingsPanel({ onClose, onReport }: { onClose: () => vo
         <div className="flex items-center gap-3">
           <div className="mr-auto">
             <h2 id="settings-title" className="text-lg font-semibold">Settings</h2>
-            <p className="text-sm text-muted">Storage &amp; usage · information only</p>
+            <p className="text-sm text-muted">Information only</p>
           </div>
-          <button onClick={() => void load()} disabled={loading} className="text-sm text-accent hover:underline disabled:opacity-50">
+          <button
+            onClick={() => (tab === "storage" ? void load() : setSpendKey((k) => k + 1))}
+            disabled={loading}
+            className="text-sm text-accent hover:underline disabled:opacity-50"
+          >
             {loading ? "Checking…" : "Refresh"}
           </button>
           <button onClick={onClose} className="rounded-lg border border-line px-3 py-1.5 text-sm">Close</button>
         </div>
 
+        <div className="mt-3 flex gap-1 rounded-lg bg-panel-2 p-1 text-sm" role="tablist" aria-label="Settings sections">
+          {(["storage", "spending"] as const).map((t) => (
+            <button
+              key={t}
+              role="tab"
+              aria-selected={tab === t}
+              onClick={() => setTab(t)}
+              className={`flex-1 rounded-md px-3 py-1 font-medium transition ${tab === t ? "bg-panel shadow-sm" : "text-muted hover:text-fg"}`}
+            >
+              {t === "storage" ? "Storage" : "Spending"}
+            </button>
+          ))}
+        </div>
+
+        {tab === "spending" ? (
+          <SpendingTab refreshKey={spendKey} />
+        ) : (
         <div className="mt-4 flex flex-col gap-4">
           {error && <p className="text-sm text-bad">Couldn&apos;t load usage: {error}</p>}
           {!report && !error && <p className="text-sm text-muted">Checking storage…</p>}
@@ -226,6 +355,7 @@ export default function SettingsPanel({ onClose, onReport }: { onClose: () => vo
             </p>
           )}
         </div>
+        )}
       </div>
     </div>
   );

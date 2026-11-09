@@ -7,6 +7,7 @@ import ModelPicker from "@/components/ModelPicker";
 import Results from "@/components/Results";
 import SettingsPanel, { nearQuota } from "@/components/SettingsPanel";
 import { api } from "@/lib/api";
+import { awaitingCost } from "@/lib/cost";
 import { extractText, makeAsset, type Asset } from "@/lib/extract";
 import * as history from "@/lib/history";
 import { buildInput, collectFileRefs, initialValue, replaceFileRefs, schemaToFields, type FormField } from "@/lib/schema";
@@ -73,7 +74,7 @@ export default function Studio() {
   const [drafting, setDrafting] = useState(false);
   const [draftError, setDraftError] = useState<string | null>(null);
 
-  const [quote, setQuote] = useState<{ usd: number | null; error: string | null; loading: boolean }>({ usd: null, error: null, loading: false });
+  const [quote, setQuote] = useState<{ usd: number | null; error: string | null; loading: boolean; videoInput?: boolean }>({ usd: null, error: null, loading: false });
   const [busy, setBusy] = useState(false);
   const [formErrors, setFormErrors] = useState<string[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -278,9 +279,21 @@ export default function Studio() {
       setQuote({ usd: null, error: null, loading: false });
       return;
     }
-    const placeholders = Object.fromEntries(Object.entries(mediaRefs()).map(([k, refs]) => [k, refs.map(() => PLACEHOLDER_URL)]));
+    const refs = mediaRefs();
+    const placeholders = Object.fromEntries(Object.entries(refs).map(([k, list]) => [k, list.map(() => PLACEHOLDER_URL)]));
     const built = buildInput(fields, values, prompt, placeholders);
     const errors = built.errors;
+    // Pika prices a video input by its length, which a placeholder doesn't have,
+    // so don't show a made-up number. The real quote is taken at Generate.
+    const isVideoRef = (r: string) =>
+      r.startsWith("asset:") ? assets.find((a) => `asset:${a.id}` === r)?.kind === "video" : /\.(mp4|mov|webm|m4v)(\?|$)/i.test(r);
+    const usesVideo =
+      Object.values(refs).flat().some(isVideoRef) ||
+      [...collectFileRefs(built.input)].some((n) => assets.find((a) => a.name === n)?.kind === "video");
+    if (usesVideo) {
+      setQuote({ usd: null, error: null, loading: false, videoInput: true });
+      return;
+    }
     const input = replaceFileRefs(
       built.input,
       Object.fromEntries([...collectFileRefs(built.input)].map((n) => [n, PLACEHOLDER_URL])),
@@ -305,7 +318,7 @@ export default function Studio() {
       clearTimeout(t);
       ctrl.abort();
     };
-  }, [detail, fields, values, prompt, mediaRefs]);
+  }, [detail, fields, values, prompt, mediaRefs, assets]);
 
   // ---------- Claude prompt draft ----------
   async function draftPrompt() {
@@ -472,12 +485,15 @@ export default function Studio() {
   // ---------- poll running jobs ----------
   const runsRef = useRef(runs);
   runsRef.current = runs;
-  const hasPollable = runs.some(needsPolling);
+  const hasPollable = runs.some((r) => needsPolling(r) || awaitingCost(r));
   useEffect(() => {
     if (!hasPollable) return;
     let stopped = false;
+    let ticks = 0;
     const tick = async () => {
-      const active = runsRef.current.filter(needsPolling);
+      // Waiting only for Pika to confirm the charge: every 30 s is plenty.
+      const checkCosts = ticks++ % 6 === 0;
+      const active = runsRef.current.filter((r) => needsPolling(r) || (checkCosts && awaitingCost(r)));
       await Promise.all(
         active.map(async (r) => {
           try {

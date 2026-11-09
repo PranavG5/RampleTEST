@@ -14,7 +14,7 @@ interface Props {
   values: Record<string, unknown>;
   onValue: (name: string, v: unknown) => void;
   assets: Asset[];
-  quote: { usd: number | null; error: string | null; loading: boolean };
+  quote: { usd: number | null; error: string | null; loading: boolean; videoInput?: boolean };
   onGenerate: () => void;
   busy: boolean;
   formErrors: string[];
@@ -261,6 +261,8 @@ export default function ModelForm(p: Props) {
           {m.provider === "pika" ? (
             p.quote.loading ? (
               <span className="text-muted">Pricing…</span>
+            ) : p.quote.videoInput ? (
+              <span className="text-xs text-muted">Price depends on your video&apos;s length. Pika prices it when you click Generate.</span>
             ) : p.quote.usd !== null ? (
               <span>
                 Est. cost <strong>${p.quote.usd.toFixed(3).replace(/0$/, "")}</strong>

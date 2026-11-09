@@ -8,3 +8,4 @@ export {
 export { removeRunVideos, signedVideoUrl, SIGNED_URL_TTL_S } from "./storage";
 export { archiveVideo, retryDueArchives, MAX_ARCHIVE_ATTEMPTS } from "./archive";
 export { getUsageStats, type UsageStats } from "./usage";
+export { getSpendingStats, type SpendingStats, type SpendBucket } from "./spending";
