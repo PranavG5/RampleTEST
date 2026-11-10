@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { PROVIDER_LABEL, type Provider } from "@/lib/types";
 import type { SpendingStats } from "@/lib/db/spending";
+import type { PikaBalance } from "@/lib/providers/pika";
 import type { UsageReport } from "@/lib/usage";
 import { videoCacheUsage } from "@/lib/videoCache";
 
@@ -62,7 +63,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Row({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex justify-between gap-3 py-0.5 text-sm">
       <span className="text-muted">{label}</span>
@@ -73,20 +74,59 @@ function Row({ label, value }: { label: string; value: string }) {
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
-const money = (n: number) => (n > 0 && n < 0.01 ? "<$0.01" : `$${n.toFixed(2)}`);
+const money = (n: number) => (n < 0 ? `-$${Math.abs(n).toFixed(2)}` : n > 0 && n < 0.01 ? "<$0.01" : `$${n.toFixed(2)}`);
+
+type PikaMoney = { balance?: PikaBalance; spentThisMonthUsd?: number; error?: string };
+
+// Money left on each provider account. Pika reports its balance; Higgsfield's
+// API doesn't, so it links to its console.
+function MoneyLeft({ pika }: { pika: PikaMoney }) {
+  const b = pika.balance;
+  return (
+    <Section title="Money left">
+      {b ? (
+        <Row
+          label={b.invoice ? "Pika (billed by invoice)" : "Pika"}
+          value={
+            <>
+              <strong className={b.remainingUsd <= 0 ? "text-bad" : ""}>{money(b.remainingUsd)}</strong>
+              <span className="text-muted">
+                {b.invoice
+                  ? ` left of ${money(b.invoice.limitUsd)} this period${b.invoice.windowEnd ? `, resets ${new Date(b.invoice.windowEnd).toLocaleDateString([], { month: "short", day: "numeric" })}` : ""}`
+                  : b.creditUsd > 0
+                    ? ` (${money(b.prepaidUsd)} prepaid + ${money(b.creditUsd)} free credits)`
+                    : ""}
+              </span>
+            </>
+          }
+        />
+      ) : (
+        <Row label="Pika" value={<span className="text-warn">couldn&apos;t check: {pika.error ?? "no answer"}</span>} />
+      )}
+      <Row
+        label="Higgsfield"
+        value={
+          <a href="https://console.higgsfield.ai" target="_blank" rel="noreferrer" className="text-accent hover:underline">
+            see console.higgsfield.ai ↗
+          </a>
+        }
+      />
+    </Section>
+  );
+}
 const spent = (b: { exact: number; estimated: number }) => Number(b.exact) + Number(b.estimated);
 const monthLabel = (m: string) => new Date(`${m}-01T00:00:00Z`).toLocaleDateString([], { month: "short", year: "numeric", timeZone: "UTC" });
 
 // Settings -> Spending: what the team has spent on generations, from each
 // run's confirmed Pika charge (or Pika's quote until it's confirmed).
 function SpendingTab({ refreshKey }: { refreshKey: number }) {
-  const [data, setData] = useState<{ stats: SpendingStats | null } | null>(null);
+  const [data, setData] = useState<{ stats: SpendingStats | null; pika: PikaMoney } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    api<{ stats: SpendingStats | null }>("/api/spending")
+    api<{ stats: SpendingStats | null; pika: PikaMoney }>("/api/spending")
       .then((d) => !cancelled && setData(d))
       .catch((e: Error) => !cancelled && setError(e.message));
     return () => {
@@ -98,11 +138,14 @@ function SpendingTab({ refreshKey }: { refreshKey: number }) {
   if (!data) return <p className="mt-4 text-sm text-muted">Adding up spending…</p>;
   if (!data.stats) {
     return (
-      <div className="mt-4 rounded-lg bg-panel-2 p-3 text-sm">
-        <p className="font-medium">One-time setup needed</p>
-        <p className="mt-1 text-muted">
-          To see spending here, run <span className="font-mono text-xs">supabase/migrations/20261109000001_spending.sql</span> once in the Supabase SQL Editor.
-        </p>
+      <div className="mt-4 flex flex-col gap-4">
+        <MoneyLeft pika={data.pika} />
+        <div className="rounded-lg bg-panel-2 p-3 text-sm">
+          <p className="font-medium">One-time setup needed</p>
+          <p className="mt-1 text-muted">
+            To see spending here, run <span className="font-mono text-xs">supabase/migrations/20261109000001_spending.sql</span> once in the Supabase SQL Editor.
+          </p>
+        </div>
       </div>
     );
   }
@@ -110,7 +153,8 @@ function SpendingTab({ refreshKey }: { refreshKey: number }) {
   const { totals, by_provider, by_model, by_month } = data.stats;
   return (
     <div className="mt-4 flex flex-col gap-4">
-      <div>
+      <MoneyLeft pika={data.pika} />
+      <div className="border-t border-line pt-4">
         <div className="text-3xl font-semibold tabular-nums">{money(spent(totals.total))}</div>
         <p className="text-sm text-muted">
           spent in total on {plural(Number(totals.total.runs), "run")} · {money(Number(totals.total.exact))} confirmed by Pika
@@ -121,6 +165,9 @@ function SpendingTab({ refreshKey }: { refreshKey: number }) {
       <Section title="Recent">
         <Row label="This month (UTC)" value={`${money(spent(totals.this_month))} · ${plural(Number(totals.this_month.runs), "run")}`} />
         <Row label="Last 30 days" value={`${money(spent(totals.last_30_days))} · ${plural(Number(totals.last_30_days.runs), "run")}`} />
+        {data.pika.spentThisMonthUsd !== undefined && (
+          <Row label="Pika's own record, this month (whole Pika account)" value={money(data.pika.spentThisMonthUsd)} />
+        )}
       </Section>
 
       <Section title="By provider">

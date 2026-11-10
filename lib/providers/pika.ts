@@ -259,6 +259,51 @@ export async function getPikaJob(jobId: string): Promise<JobState> {
   };
 }
 
+// Money left on the Pika account. A read-only lookup: Pika only charges for
+// generations. A prepaid account spends its balance (comp credits first, then
+// prepaid); an invoice-billed account spends what's left of its current cycle.
+export interface PikaBalance {
+  billing: "prepaid" | "invoice";
+  remainingUsd: number;
+  prepaidUsd: number;
+  creditUsd: number;
+  invoice?: { limitUsd: number; usedUsd: number; windowEnd: string };
+}
+
+const fromMicro = (n: unknown) => (typeof n === "number" ? n / 1e6 : 0);
+
+export async function getPikaBalance(): Promise<PikaBalance> {
+  const res = await fetch(`${BASE}/billing/balance`, { headers: { "X-API-Key": key() }, cache: "no-store", signal: AbortSignal.timeout(8000) });
+  const body = (await readBody(res)) as {
+    balance_micro_usd?: number;
+    prepaid_micro_usd?: number;
+    credit_micro_usd?: number;
+    postpaid?: {
+      active?: boolean;
+      cycle?: { limit_micro_usd?: number; used_micro_usd?: number; remaining_micro_usd?: number; window_end?: string } | null;
+    } | null;
+  };
+  if (!res.ok) throw new ProviderError(res.status, extractError(body, `Pika balance lookup failed (${res.status})`));
+  const cycle = body.postpaid?.active ? body.postpaid.cycle : null;
+  return {
+    billing: cycle ? "invoice" : "prepaid",
+    remainingUsd: fromMicro(cycle ? cycle.remaining_micro_usd : body.balance_micro_usd),
+    prepaidUsd: fromMicro(body.prepaid_micro_usd),
+    creditUsd: fromMicro(body.credit_micro_usd),
+    invoice: cycle ? { limitUsd: fromMicro(cycle.limit_micro_usd), usedUsd: fromMicro(cycle.used_micro_usd), windowEnd: cycle.window_end ?? "" } : undefined,
+  };
+}
+
+// Pika's own ledger of spend between two UTC dates (YYYY-MM-DD, inclusive),
+// for the whole Pika account, not just this app. Read-only.
+export async function getPikaSpend(startDate: string, endDate: string): Promise<number> {
+  const q = new URLSearchParams({ start_date: startDate, end_date: endDate });
+  const res = await fetch(`${BASE}/billing/spend/daily?${q}`, { headers: { "X-API-Key": key() }, cache: "no-store", signal: AbortSignal.timeout(8000) });
+  const body = (await readBody(res)) as { results?: { amount_micro_usd?: number }[] };
+  if (!res.ok) throw new ProviderError(res.status, extractError(body, `Pika spend lookup failed (${res.status})`));
+  return (body.results ?? []).reduce((n, r) => n + fromMicro(r.amount_micro_usd), 0);
+}
+
 export async function pikaUploadTarget(contentType: string, size: number) {
   const res = await fetch(`${BASE}/v1/media/uploads`, {
     method: "POST",
