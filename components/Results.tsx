@@ -199,8 +199,8 @@ function DeleteDialog({ run, onCancel, onConfirm }: { run: Run; onCancel: () => 
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-labelledby="delete-title">
-      <form onSubmit={confirmDelete} className="w-full max-w-md rounded-2xl border border-line bg-panel p-5 shadow-lg">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-2 sm:p-4" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+      <form onSubmit={confirmDelete} className="max-h-full w-full max-w-md overflow-y-auto rounded-2xl border border-line bg-panel p-5 shadow-lg">
         <h2 id="delete-title" className="text-lg font-semibold">Delete this video permanently?</h2>
         <div className="mt-3 rounded-lg bg-panel-2 p-3 text-sm">
           <div className="font-medium">{run.modelName}</div>

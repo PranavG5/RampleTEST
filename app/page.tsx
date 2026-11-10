@@ -553,7 +553,7 @@ export default function Studio() {
             <div className="flex h-7 w-7 items-center justify-center rounded-md bg-accent text-accent-fg">
               <svg viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="currentColor"><path d="M8 5v14l11-7z" /></svg>
             </div>
-            <span className="whitespace-nowrap font-semibold">Rample<span className="hidden sm:inline"> Model Lab</span></span>
+            <span className="hidden whitespace-nowrap font-semibold min-[400px]:inline">Rample<span className="hidden sm:inline"> Model Lab</span></span>
           </div>
           <nav className="flex gap-1 rounded-lg bg-panel-2 p-1 text-sm" aria-label="Sections">
             {(["generate", "results"] as const).map((t) => (
@@ -583,13 +583,18 @@ export default function Studio() {
             <span className="hidden sm:inline">Settings</span>
             {usageWarning && <span className="absolute -right-1.5 -top-1 h-2 w-2 rounded-full bg-warn" />}
           </button>
-          <button onClick={signOut} className="whitespace-nowrap text-sm text-muted hover:text-fg">Sign out</button>
+          <button onClick={signOut} className="flex items-center gap-1 whitespace-nowrap text-sm text-muted hover:text-fg" aria-label="Sign out" title="Sign out">
+            <svg viewBox="0 0 24 24" className="h-4 w-4 sm:hidden" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
+            </svg>
+            <span className="hidden sm:inline">Sign out</span>
+          </button>
         </div>
       </header>
 
       <main className="mx-auto max-w-[1600px] px-4 py-4">
         {tab === "generate" ? (
-          <div className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_minmax(0,1.1fr)]">
+          <div className="grid grid-cols-1 gap-4 lg:grid-cols-[300px_minmax(0,1fr)] xl:grid-cols-[300px_minmax(0,1fr)_minmax(0,1.1fr)]">
             <div className="h-[60vh] lg:sticky lg:top-[68px] lg:row-span-2 lg:h-[calc(100vh-88px)] xl:row-span-1">
               <ModelPicker
                 provider={provider}

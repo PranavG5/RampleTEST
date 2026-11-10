@@ -265,8 +265,10 @@ export default function SettingsPanel({ onClose, onReport }: { onClose: () => vo
   const roomFor = report && avg ? Math.max(0, Math.floor((report.quotas.storageBytes - used) / avg)) : null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 sm:items-center" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-      <div className="w-full max-w-xl rounded-2xl border border-line bg-panel p-5 shadow-lg">
+    // Fits any screen: the header and tabs stay put, only the content scrolls.
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-2 sm:p-4" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+      <div className="flex max-h-full w-full max-w-xl flex-col overflow-hidden rounded-2xl border border-line bg-panel shadow-lg">
+        <div className="shrink-0 px-4 pt-4 sm:px-5 sm:pt-5">
         <div className="flex items-center gap-3">
           <div className="mr-auto">
             <h2 id="settings-title" className="text-lg font-semibold">Settings</h2>
@@ -295,7 +297,9 @@ export default function SettingsPanel({ onClose, onReport }: { onClose: () => vo
             </button>
           ))}
         </div>
+        </div>
 
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-4 sm:px-5 sm:pb-5">
         {tab === "spending" ? (
           <SpendingTab refreshKey={spendKey} />
         ) : (
@@ -403,6 +407,7 @@ export default function SettingsPanel({ onClose, onReport }: { onClose: () => vo
           )}
         </div>
         )}
+        </div>
       </div>
     </div>
   );
